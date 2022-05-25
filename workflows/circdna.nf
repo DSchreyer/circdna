@@ -18,13 +18,13 @@ for (param in checkPathParamList) { if (param) { file(param, checkIfExists: true
 if (params.input) { ch_input = file(params.input) } else { exit 1, 'Input samplesheet not specified!' }
 if (params.fasta) { ch_fasta = file(params.fasta) } else { exit 1, 'Fasta reference genome not specified!' }
 
-software = params.circle_identifier.split(",")
-run_circexplorer2      = ("circexplorer2"      in software)
-run_circle_map_realign = ("circle_map_realign" in software)
-run_circle_map_repeats = ("circle_map_repeats" in software)
-run_circle_finder      = ("circle_finder"      in software)
-run_ampliconarchitect  = ("ampliconarchitect"  in software)
-run_unicycler          = ("unicycler"          in software)
+branch = params.circle_identifier.split(",")
+run_circexplorer2 = ("circexplorer2" in branch)
+run_circle_map_realign = ("circle_map_realign" in branch)
+run_circle_map_repeats = ("circle_map_repeats" in branch)
+run_circle_finder = ("circle_finder" in branch)
+run_ampliconarchitect = ("ampliconarchitect" in branch)
+run_unicycler = ("unicycler" in branch)
 
 if (!(run_unicycler | run_circle_map_realign | run_circle_map_repeats | run_circle_finder | run_ampliconarchitect | run_circexplorer2)) {
     exit 1, 'circle_identifier param not valid. Please check!'
@@ -108,7 +108,7 @@ include { SAMTOOLS_SORT as SAMTOOLS_SORT_FILTERED      } from '../modules/nf-cor
 include { SAMTOOLS_INDEX as SAMTOOLS_INDEX_FILTERED    } from '../modules/nf-core/modules/samtools/index/main'
 
 // SAMTOOLS SORT & INDEX
-include { SAMTOOLS_FAIDX                               } from '../modules/local/samtools/faidx/main'
+include { SAMTOOLS_FAIDX                            }   from '../modules/nf-core/modules/samtools/faidx/main'
 
 // SAMTOOLS STATISTICS
 include { SAMTOOLS_STATS                               } from '../modules/nf-core/modules/samtools/stats/main'
@@ -145,10 +145,10 @@ include { AMPLICONARCHITECT_AMPLICONSIMILARITY         } from '../modules/local/
 include { SUMMARISE_AA                                 } from '../modules/local/summarise_aa.nf'
 
 // Unicycler
-include { UNICYCLER                                    } from '../modules/local/unicycler/main.nf'
-include { SEQTK_SEQ                                    } from '../modules/local/seqtk/seq.nf'
-include { GETCIRCULARREADS                             } from '../modules/local/getcircularreads.nf'
-include { MINIMAP2_ALIGN                               } from '../modules/local/minimap2/align/main.nf'
+include { UNICYCLER           }     from '../modules/nf-core/modules/unicycler/main.nf'
+include { SEQTK_SEQ           }     from '../modules/local/seqtk/seq.nf'
+include { GETCIRCULARREADS    }     from '../modules/local/getcircularreads.nf'
+include { MINIMAP2_ALIGN      }     from '../modules/nf-core/modules/minimap2/align/main.nf'
 
 
 // MULTIQC
@@ -432,10 +432,6 @@ workflow CIRCDNA {
 
     if (run_circle_map_realign || run_circle_map_repeats) {
 
-        SAMTOOLS_FAIDX (
-            ch_fasta
-        )
-        ch_versions = ch_versions.mix(SAMTOOLS_FAIDX.out.versions)
 
         SAMTOOLS_SORT_QNAME_CM (
             ch_bam_sorted
@@ -460,9 +456,9 @@ workflow CIRCDNA {
 
         // DEFINE CHANNELS FOR REALIGN AND REPEATS
         ch_qname_sorted_bam = SAMTOOLS_SORT_QNAME_CM.out.bam
-        ch_re_sorted_bam    = SAMTOOLS_SORT_RE.out.bam
-        ch_re_sorted_bai    = SAMTOOLS_INDEX_RE.out.bai
-        ch_fasta_index      = SAMTOOLS_FAIDX.out.fai
+
+        ch_re_sorted_bam = SAMTOOLS_SORT_RE.out.bam
+        ch_re_sorted_bai = SAMTOOLS_INDEX_RE.out.bai
 
         //
         // MODULE: RUN CIRCLE_MAP REPEATS
@@ -478,6 +474,15 @@ workflow CIRCDNA {
         // MODULE: Run Circle-Map Realign
         //
         if (run_circle_map_realign) {
+
+            Channel.of(ch_fasta).map { fasta -> [ [], fasta ] }.set { ch_fasta_faidx }
+
+            SAMTOOLS_FAIDX (
+                ch_fasta_faidx
+            )
+            ch_versions = ch_versions.mix(SAMTOOLS_FAIDX.out.versions)
+
+            ch_fasta_index = SAMTOOLS_FAIDX.out.fai
             CIRCLEMAP_REALIGN (
                 ch_re_sorted_bam.join(ch_re_sorted_bai)
                     .join(ch_qname_sorted_bam)
@@ -499,8 +504,13 @@ workflow CIRCDNA {
     }
 
     if (run_unicycler && params.input_format == "FASTQ") {
+
+        ch_trimmed_reads.map { meta, fastq -> [ meta, fastq, []] }
+        .set { ch_unicycler_input }
+
+
         UNICYCLER (
-            ch_trimmed_reads
+            ch_unicycler_input
         )
         ch_versions = ch_versions.mix(UNICYCLER.out.versions)
 
@@ -513,9 +523,16 @@ workflow CIRCDNA {
             SEQTK_SEQ.out.fastq
         )
 
+        GETCIRCULARREADS.out.fastq
+            .map { meta, fastq -> [ meta + [single_end: true], fastq ] }
+            .set { ch_circular_fastq }
+
         MINIMAP2_ALIGN (
-            GETCIRCULARREADS.out.fastq,
-            ch_fasta
+            ch_circular_fastq,
+            ch_fasta,
+            false,
+            false,
+            false
         )
         ch_versions = ch_versions.mix(MINIMAP2_ALIGN.out.versions)
     } else if (run_unicycler && !params.input_format == "FASTQ") {
